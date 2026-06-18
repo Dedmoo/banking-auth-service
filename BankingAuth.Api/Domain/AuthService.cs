@@ -95,7 +95,9 @@ public sealed class AuthService
 
             if (user.TotpEnabled)
             {
-                if (string.IsNullOrWhiteSpace(request.TotpCode) || !VerifyTotpCode(user, request.TotpCode))
+                if (string.IsNullOrWhiteSpace(request.TotpCode))
+                    return new TokenResponse("", "", DateTimeOffset.UtcNow, RequiresTotp: true);
+                if (!VerifyTotpCode(user, request.TotpCode))
                     throw new UnauthorizedAccessException("Valid TOTP code is required.");
             }
 

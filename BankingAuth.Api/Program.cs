@@ -12,7 +12,11 @@ if (string.IsNullOrWhiteSpace(jwtKey))
     throw new InvalidOperationException("Jwt:SigningKey must be configured in appsettings.");
 
 builder.Services.AddOpenApi();
-builder.Services.AddSingleton(new AuthService(jwtKey));
+var authService = new AuthService(jwtKey);
+var adminEmail = builder.Configuration["Admin:Email"] ?? "admin@example.com";
+var adminPassword = builder.Configuration["Admin:Password"] ?? "Admin123!";
+authService.EnsureAdmin(adminEmail, adminPassword);
+builder.Services.AddSingleton(authService);
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>

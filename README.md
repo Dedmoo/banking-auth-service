@@ -57,7 +57,9 @@ dotnet run --project BankingAuth.Api
 
 API base URL (HTTP): `http://localhost:5049`
 
-JWT signing key is loaded from `Jwt:SigningKey` in `appsettings.json` (change it for anything beyond local demos).
+Admin bootstrap (Development): on startup the API seeds
+`Admin:Email` / `Admin:Password` from config (defaults `admin@example.com` / `Admin123!`)
+via `EnsureAdmin`. Use that account for `GET /api/admin/ping`.
 
 ## Example flow
 

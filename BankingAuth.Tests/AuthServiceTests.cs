@@ -59,7 +59,11 @@ public class AuthServiceTests
         auth.ConfirmEnableTotp(user.UserId, code);
 
         Assert.Throws<UnauthorizedAccessException>(() =>
-            auth.Login(new LoginRequest("dave@bank.test", "Secret123!")));
+            auth.Login(new LoginRequest("dave@bank.test", "Secret123!", "000000")));
+
+        var challenge = auth.Login(new LoginRequest("dave@bank.test", "Secret123!"));
+        Assert.True(challenge.RequiresTotp);
+        Assert.True(string.IsNullOrEmpty(challenge.AccessToken));
 
         var loginCode = new Totp(Base32Encoding.ToBytes(setup.SharedSecret)).ComputeTotp();
         var tokens = auth.Login(new LoginRequest("dave@bank.test", "Secret123!", loginCode));
