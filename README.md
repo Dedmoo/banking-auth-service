@@ -40,7 +40,7 @@ sequenceDiagram
 
 ## Features
 
-- User registration with PBKDF2 password hashing
+- User registration with PBKDF2 password hashing (`Customer` / `Teller` only; Admin is not self-service)
 - Login with JWT access token (30 minutes) + refresh token (7 days)
 - Refresh-token rotation (old token revoked after use)
 - TOTP setup + confirmation (Google Authenticator compatible)
@@ -55,31 +55,25 @@ dotnet test
 dotnet run --project BankingAuth.Api
 ```
 
-Optional config (`appsettings.Development.json`):
+API base URL (HTTP): `http://localhost:5049`
 
-```json
-{
-  "Jwt": {
-    "SigningKey": "replace-with-a-long-random-secret-key"
-  }
-}
-```
+JWT signing key is loaded from `Jwt:SigningKey` in `appsettings.json` (change it for anything beyond local demos).
 
 ## Example flow
 
 ```bash
-# Register
-curl -s -X POST http://localhost:5080/api/auth/register \
+# Register (Customer or Teller only)
+curl -s -X POST http://localhost:5049/api/auth/register \
   -H "Content-Type: application/json" \
   -d "{\"email\":\"alice@example.com\",\"password\":\"Secret123!\",\"role\":\"Customer\"}"
 
 # Login
-curl -s -X POST http://localhost:5080/api/auth/login \
+curl -s -X POST http://localhost:5049/api/auth/login \
   -H "Content-Type: application/json" \
   -d "{\"email\":\"alice@example.com\",\"password\":\"Secret123!\"}"
 
 # Profile (Bearer access token)
-curl -s http://localhost:5080/api/me -H "Authorization: Bearer <access_token>"
+curl -s http://localhost:5049/api/me -H "Authorization: Bearer <access_token>"
 ```
 
 ### Enable 2FA

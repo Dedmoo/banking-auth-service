@@ -32,12 +32,21 @@ public class AuthServiceTests
     public void Refresh_RotatesRefreshToken()
     {
         var auth = Create();
-        auth.Register(new RegisterRequest("carol@bank.test", "Secret123!", "Admin"));
+        auth.EnsureAdmin("carol@bank.test", "Secret123!");
         var first = auth.Login(new LoginRequest("carol@bank.test", "Secret123!"));
         var second = auth.Refresh(first.RefreshToken);
 
         Assert.NotEqual(first.RefreshToken, second.RefreshToken);
         Assert.Throws<UnauthorizedAccessException>(() => auth.Refresh(first.RefreshToken));
+    }
+
+    [Fact]
+    public void Register_RejectsSelfServiceAdmin()
+    {
+        var auth = Create();
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            auth.Register(new RegisterRequest("eve@bank.test", "Secret123!", "Admin")));
+        Assert.Contains("Admin", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

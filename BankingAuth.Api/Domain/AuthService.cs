@@ -29,7 +29,9 @@ public sealed class AuthService
             throw new InvalidOperationException("Password must be at least 8 characters.");
 
         if (!Enum.TryParse<UserRole>(request.Role, ignoreCase: true, out var role))
-            throw new InvalidOperationException("Role must be Customer, Teller, or Admin.");
+            throw new InvalidOperationException("Role must be Customer or Teller.");
+        if (role is UserRole.Admin)
+            throw new InvalidOperationException("Admin accounts cannot be self-registered.");
 
         lock (_gate)
         {
@@ -42,6 +44,38 @@ public sealed class AuthService
                 Email = request.Email.Trim().ToLowerInvariant(),
                 PasswordHash = PasswordHasher.Hash(request.Password),
                 Role = role
+            };
+            _usersByEmail[user.Email] = user;
+            return user;
+        }
+    }
+
+    /// <summary>
+    /// Creates a bootstrap Admin for demos and tests. Not exposed over the public register API.
+    /// </summary>
+    public UserAccount EnsureAdmin(string email, string password)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(email);
+        ArgumentException.ThrowIfNullOrWhiteSpace(password);
+        if (password.Length < 8)
+            throw new InvalidOperationException("Password must be at least 8 characters.");
+
+        lock (_gate)
+        {
+            var key = email.Trim().ToLowerInvariant();
+            if (_usersByEmail.TryGetValue(key, out var existing))
+            {
+                if (existing.Role != UserRole.Admin)
+                    throw new InvalidOperationException("Email is already registered as a non-admin user.");
+                return existing;
+            }
+
+            var user = new UserAccount
+            {
+                UserId = Guid.NewGuid().ToString("N"),
+                Email = key,
+                PasswordHash = PasswordHasher.Hash(password),
+                Role = UserRole.Admin
             };
             _usersByEmail[user.Email] = user;
             return user;

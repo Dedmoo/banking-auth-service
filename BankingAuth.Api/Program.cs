@@ -7,8 +7,9 @@ using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
 
-var jwtKey = builder.Configuration["Jwt:SigningKey"]
-             ?? "dev-only-change-me-banking-auth-signing-key-32b!";
+var jwtKey = builder.Configuration["Jwt:SigningKey"];
+if (string.IsNullOrWhiteSpace(jwtKey))
+    throw new InvalidOperationException("Jwt:SigningKey must be configured in appsettings.");
 
 builder.Services.AddOpenApi();
 builder.Services.AddSingleton(new AuthService(jwtKey));
