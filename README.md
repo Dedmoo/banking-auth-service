@@ -47,6 +47,80 @@ sequenceDiagram
 - Role-protected admin endpoint
 - OpenAPI document included
 
+## Domain model
+
+Class-level view of the main types and how they relate (fields, operations and dependencies).
+
+```mermaid
+classDiagram
+    direction TB
+    class AuthService {
+        -_usersByEmail: Dictionary~string, UserAccount~
+        -_refreshTokens: Dictionary~string, RefreshToken~
+        +Register(request) UserAccount
+        +EnsureAdmin(email, password) UserAccount
+        +Login(request) TokenResponse
+        +Refresh(refreshToken) TokenResponse
+        +BeginEnableTotp(userId) EnableTotpResponse
+        +ConfirmEnableTotp(userId, code) void
+        +GetProfile(userId) UserAccount
+    }
+    class PasswordHasher {
+        <<utility>>
+        +Hash(password) string
+        +Verify(password, hash) bool
+    }
+    class UserAccount {
+        +UserId: string
+        +Email: string
+        +PasswordHash: string
+        +Role: UserRole
+        +TotpSecret: string
+        +TotpEnabled: bool
+        +CreatedAt: DateTimeOffset
+    }
+    class RefreshToken {
+        +Token: string
+        +UserId: string
+        +ExpiresAt: DateTimeOffset
+        +Revoked: bool
+    }
+    class UserRole {
+        <<enumeration>>
+        Customer
+        Teller
+        Admin
+    }
+    class RegisterRequest {
+        +Email: string
+        +Password: string
+        +Role: string
+    }
+    class LoginRequest {
+        +Email: string
+        +Password: string
+        +TotpCode: string
+    }
+    class TokenResponse {
+        +AccessToken: string
+        +RefreshToken: string
+        +ExpiresAt: DateTimeOffset
+        +RequiresTotp: bool
+    }
+    class EnableTotpResponse {
+        +SharedSecret: string
+        +OtpAuthUri: string
+    }
+    AuthService o-- UserAccount
+    AuthService o-- RefreshToken
+    AuthService ..> PasswordHasher
+    UserAccount --> UserRole
+    AuthService ..> RegisterRequest
+    AuthService ..> LoginRequest
+    AuthService ..> TokenResponse
+    AuthService ..> EnableTotpResponse
+```
+
 ## Quick start
 
 ```bash
