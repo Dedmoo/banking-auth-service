@@ -1,0 +1,19 @@
+services:
+  banking-auth-api:
+    build:
+      context: ./BankingAuth.Api
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      # Required: no weak fallback key is baked into the image for non-Development environments.
+      # The API fails to start if this is missing, by design (see Program.cs).
+      Jwt__SigningKey: ${JWT_SIGNING_KEY:?JWT_SIGNING_KEY must be set, e.g. in a .env file}
+      Admin__Email: ${ADMIN_EMAIL:-admin@example.com}
+      Admin__Password: ${ADMIN_PASSWORD:-Admin123!}
+    volumes:
+      - banking-auth-data:/data
+    restart: unless-stopped
+
+volumes:
+  banking-auth-data:

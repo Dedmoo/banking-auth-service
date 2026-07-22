@@ -5,16 +5,15 @@ using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
-using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.IdentityModel.Tokens;
 
 namespace BankingAuth.Tests;
 
-public class SecurityEndpointTests : IClassFixture<WebApplicationFactory<Program>>
+public class SecurityEndpointTests : IClassFixture<AuthWebApplicationFactory>
 {
     private readonly HttpClient _client;
 
-    public SecurityEndpointTests(WebApplicationFactory<Program> factory) => _client = factory.CreateClient();
+    public SecurityEndpointTests(AuthWebApplicationFactory factory) => _client = factory.CreateClient();
 
     [Fact]
     public async Task CustomerAndAdminEndpoints_RejectUnauthenticatedRequests()

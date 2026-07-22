@@ -11,13 +11,16 @@ C4Container
   title BankingAuthService containers
   Container(api, "Minimal API", ".NET 10", "HTTP endpoints and security headers")
   Container(service, "AuthService", ".NET", "PBKDF2, lockout, JWT and refresh tokens")
+  ContainerDb(db, "SQLite", "EF Core", "Users and refresh tokens")
   Rel(api, service, "uses")
+  Rel(service, db, "reads/writes via EF Core")
 ```
 ```mermaid
 flowchart LR
   Endpoint --> AuthService --> PasswordHasher
+  AuthService --> AuthDbContext --> SQLite
   AuthService --> JWT
-  AuthService --> RefreshTokens
 ```
 
-Storage is in memory for a runnable demonstration; restarting the API clears users and refresh tokens.
+Storage is EF Core + SQLite, file-based and durable; restarting the API keeps users and refresh
+tokens. Refresh-token rotation runs inside an explicit database transaction.

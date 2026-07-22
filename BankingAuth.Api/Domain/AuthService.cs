@@ -2,6 +2,8 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using BankingAuth.Api.Data;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using OtpNet;
 
@@ -11,14 +13,14 @@ public sealed class AuthService
 {
     private const int MaximumFailedLoginAttempts = 5;
     private static readonly TimeSpan LockoutDuration = TimeSpan.FromMinutes(15);
-    private readonly object _gate = new();
-    private readonly Dictionary<string, UserAccount> _usersByEmail = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, RefreshToken> _refreshTokens = new(StringComparer.Ordinal);
+    private readonly AuthDbContext _db;
     private readonly byte[] _signingKey;
 
-    public AuthService(string jwtSigningKey)
+    public AuthService(AuthDbContext db, string jwtSigningKey)
     {
+        ArgumentNullException.ThrowIfNull(db);
         ArgumentException.ThrowIfNullOrWhiteSpace(jwtSigningKey);
+        _db = db;
         _signingKey = Encoding.UTF8.GetBytes(jwtSigningKey);
     }
 
@@ -34,21 +36,29 @@ public sealed class AuthService
         if (role is UserRole.Admin)
             throw new InvalidOperationException("Admin accounts cannot be self-registered.");
 
-        lock (_gate)
-        {
-            if (_usersByEmail.ContainsKey(request.Email.Trim()))
-                throw new InvalidOperationException("Email already registered.");
+        var email = NormalizeEmail(request.Email);
+        if (_db.Users.Any(u => u.Email == email))
+            throw new InvalidOperationException("Email already registered.");
 
-            var user = new UserAccount
-            {
-                UserId = Guid.NewGuid().ToString("N"),
-                Email = request.Email.Trim().ToLowerInvariant(),
-                PasswordHash = PasswordHasher.Hash(request.Password),
-                Role = role
-            };
-            _usersByEmail[user.Email] = user;
-            return user;
+        var user = new UserAccount
+        {
+            UserId = Guid.NewGuid().ToString("N"),
+            Email = email,
+            PasswordHash = PasswordHasher.Hash(request.Password),
+            Role = role
+        };
+
+        _db.Users.Add(user);
+        try
+        {
+            _db.SaveChanges();
         }
+        catch (DbUpdateException)
+        {
+            // Unique index on Email is the race-condition backstop behind the pre-check above.
+            throw new InvalidOperationException("Email already registered.");
+        }
+        return user;
     }
 
     /// <summary>
@@ -60,126 +70,119 @@ public sealed class AuthService
         ArgumentException.ThrowIfNullOrWhiteSpace(password);
         ValidatePassword(password);
 
-        lock (_gate)
+        var key = NormalizeEmail(email);
+        var existing = _db.Users.FirstOrDefault(u => u.Email == key);
+        if (existing is not null)
         {
-            var key = email.Trim().ToLowerInvariant();
-            if (_usersByEmail.TryGetValue(key, out var existing))
-            {
-                if (existing.Role != UserRole.Admin)
-                    throw new InvalidOperationException("Email is already registered as a non-admin user.");
-                return existing;
-            }
-
-            var user = new UserAccount
-            {
-                UserId = Guid.NewGuid().ToString("N"),
-                Email = key,
-                PasswordHash = PasswordHasher.Hash(password),
-                Role = UserRole.Admin
-            };
-            _usersByEmail[user.Email] = user;
-            return user;
+            if (existing.Role != UserRole.Admin)
+                throw new InvalidOperationException("Email is already registered as a non-admin user.");
+            return existing;
         }
+
+        var user = new UserAccount
+        {
+            UserId = Guid.NewGuid().ToString("N"),
+            Email = key,
+            PasswordHash = PasswordHasher.Hash(password),
+            Role = UserRole.Admin
+        };
+        _db.Users.Add(user);
+        _db.SaveChanges();
+        return user;
     }
 
     public TokenResponse Login(LoginRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
-        lock (_gate)
+        var email = NormalizeEmail(request.Email);
+        var user = _db.Users.FirstOrDefault(u => u.Email == email);
+        if (user is null)
+            throw new UnauthorizedAccessException("Invalid email or password.");
+        if (user.LockedUntil is { } lockedUntil && lockedUntil > DateTimeOffset.UtcNow)
+            throw new UnauthorizedAccessException("Account is temporarily locked.");
+        if (!PasswordHasher.Verify(request.Password, user.PasswordHash))
         {
-            if (!_usersByEmail.TryGetValue(request.Email.Trim(), out var user))
+            user.FailedLoginAttempts++;
+            if (user.FailedLoginAttempts >= MaximumFailedLoginAttempts)
             {
-                throw new UnauthorizedAccessException("Invalid email or password.");
+                user.FailedLoginAttempts = 0;
+                user.LockedUntil = DateTimeOffset.UtcNow.Add(LockoutDuration);
             }
-            if (user.LockedUntil is { } lockedUntil && lockedUntil > DateTimeOffset.UtcNow)
-                throw new UnauthorizedAccessException("Account is temporarily locked.");
-            if (!PasswordHasher.Verify(request.Password, user.PasswordHash))
-            {
-                user.FailedLoginAttempts++;
-                if (user.FailedLoginAttempts >= MaximumFailedLoginAttempts)
-                {
-                    user.FailedLoginAttempts = 0;
-                    user.LockedUntil = DateTimeOffset.UtcNow.Add(LockoutDuration);
-                }
-                throw new UnauthorizedAccessException("Invalid email or password.");
-            }
-            user.FailedLoginAttempts = 0;
-            user.LockedUntil = null;
-
-            if (user.TotpEnabled)
-            {
-                if (string.IsNullOrWhiteSpace(request.TotpCode))
-                    return new TokenResponse("", "", DateTimeOffset.UtcNow, RequiresTotp: true);
-                if (!VerifyTotpCode(user, request.TotpCode))
-                    throw new UnauthorizedAccessException("Valid TOTP code is required.");
-            }
-
-            return IssueTokens(user);
+            _db.SaveChanges();
+            throw new UnauthorizedAccessException("Invalid email or password.");
         }
+        user.FailedLoginAttempts = 0;
+        user.LockedUntil = null;
+
+        if (user.TotpEnabled)
+        {
+            if (string.IsNullOrWhiteSpace(request.TotpCode))
+            {
+                _db.SaveChanges();
+                return new TokenResponse("", "", DateTimeOffset.UtcNow, RequiresTotp: true);
+            }
+            if (!VerifyTotpCode(user, request.TotpCode))
+            {
+                _db.SaveChanges();
+                throw new UnauthorizedAccessException("Valid TOTP code is required.");
+            }
+        }
+
+        return IssueTokens(user);
     }
 
     public TokenResponse Refresh(string refreshToken)
     {
-        lock (_gate)
-        {
-            if (!_refreshTokens.TryGetValue(refreshToken, out var stored)
-                || stored.Revoked
-                || stored.ExpiresAt < DateTimeOffset.UtcNow)
-            {
-                throw new UnauthorizedAccessException("Invalid refresh token.");
-            }
+        using var transaction = _db.Database.BeginTransaction();
 
-            var user = _usersByEmail.Values.First(u => u.UserId == stored.UserId);
-            stored.Revoked = true;
-            return IssueTokens(user);
-        }
+        var stored = _db.RefreshTokens.FirstOrDefault(t => t.Token == refreshToken);
+        if (stored is null || stored.Revoked || stored.ExpiresAt < DateTimeOffset.UtcNow)
+            throw new UnauthorizedAccessException("Invalid refresh token.");
+
+        var user = _db.Users.FirstOrDefault(u => u.UserId == stored.UserId)
+            ?? throw new UnauthorizedAccessException("Invalid refresh token.");
+        stored.Revoked = true;
+        _db.SaveChanges();
+
+        var response = IssueTokens(user);
+        transaction.Commit();
+        return response;
     }
 
     public void Logout(string refreshToken)
     {
         if (string.IsNullOrWhiteSpace(refreshToken))
             throw new UnauthorizedAccessException("Refresh token is required.");
-        lock (_gate)
-        {
-            if (!_refreshTokens.TryGetValue(refreshToken, out var stored) || stored.Revoked)
-                throw new UnauthorizedAccessException("Invalid refresh token.");
-            stored.Revoked = true;
-        }
+        var stored = _db.RefreshTokens.FirstOrDefault(t => t.Token == refreshToken);
+        if (stored is null || stored.Revoked)
+            throw new UnauthorizedAccessException("Invalid refresh token.");
+        stored.Revoked = true;
+        _db.SaveChanges();
     }
 
     public EnableTotpResponse BeginEnableTotp(string userId)
     {
-        lock (_gate)
-        {
-            var user = GetUserById(userId);
-            var secret = KeyGeneration.GenerateRandomKey(20);
-            user.TotpSecret = Base32Encoding.ToString(secret);
-            user.TotpEnabled = false;
-            var uri = new OtpUri(OtpType.Totp, secret, user.Email, "BankingAuth").ToString();
-            return new EnableTotpResponse(user.TotpSecret, uri);
-        }
+        var user = GetUserById(userId);
+        var secret = KeyGeneration.GenerateRandomKey(20);
+        user.TotpSecret = Base32Encoding.ToString(secret);
+        user.TotpEnabled = false;
+        _db.SaveChanges();
+        var uri = new OtpUri(OtpType.Totp, secret, user.Email, "BankingAuth").ToString();
+        return new EnableTotpResponse(user.TotpSecret, uri);
     }
 
     public void ConfirmEnableTotp(string userId, string code)
     {
-        lock (_gate)
-        {
-            var user = GetUserById(userId);
-            if (string.IsNullOrWhiteSpace(user.TotpSecret))
-                throw new InvalidOperationException("TOTP setup was not started.");
-            if (!VerifyTotpCode(user, code))
-                throw new UnauthorizedAccessException("Invalid TOTP code.");
-            user.TotpEnabled = true;
-        }
+        var user = GetUserById(userId);
+        if (string.IsNullOrWhiteSpace(user.TotpSecret))
+            throw new InvalidOperationException("TOTP setup was not started.");
+        if (!VerifyTotpCode(user, code))
+            throw new UnauthorizedAccessException("Invalid TOTP code.");
+        user.TotpEnabled = true;
+        _db.SaveChanges();
     }
 
-    public UserAccount GetProfile(string userId)
-    {
-        lock (_gate)
-        {
-            return GetUserById(userId);
-        }
-    }
+    public UserAccount GetProfile(string userId) => GetUserById(userId);
 
     private TokenResponse IssueTokens(UserAccount user)
     {
@@ -204,19 +207,20 @@ public sealed class AuthService
 
         var access = new JwtSecurityTokenHandler().WriteToken(jwt);
         var refresh = Convert.ToBase64String(RandomNumberGenerator.GetBytes(48));
-        _refreshTokens[refresh] = new RefreshToken
+        _db.RefreshTokens.Add(new RefreshToken
         {
             Token = refresh,
             UserId = user.UserId,
             ExpiresAt = DateTimeOffset.UtcNow.AddDays(7)
-        };
+        });
+        _db.SaveChanges();
 
         return new TokenResponse(access, refresh, expires, RequiresTotp: false);
     }
 
     private UserAccount GetUserById(string userId)
     {
-        var user = _usersByEmail.Values.FirstOrDefault(u => u.UserId == userId);
+        var user = _db.Users.FirstOrDefault(u => u.UserId == userId);
         if (user is null)
             throw new KeyNotFoundException("User not found.");
         return user;
@@ -235,4 +239,6 @@ public sealed class AuthService
         if (password.Length < 8 || !password.Any(char.IsLetter) || !password.Any(char.IsDigit))
             throw new InvalidOperationException("Password must be at least 8 characters and contain a letter and a digit.");
     }
+
+    private static string NormalizeEmail(string email) => email.Trim().ToLowerInvariant();
 }

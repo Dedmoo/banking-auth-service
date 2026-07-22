@@ -6,7 +6,7 @@ namespace BankingAuth.Tests;
 public class AuthServiceTests
 {
     private static AuthService Create() =>
-        new("unit-test-signing-key-must-be-long-enough!");
+        new(TestDbContextFactory.CreateInMemorySqlite(), "unit-test-signing-key-must-be-long-enough!");
 
     [Fact]
     public void RegisterAndLogin_IssuesTokens()

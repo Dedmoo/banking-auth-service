@@ -1,22 +1,39 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using BankingAuth.Api.Data;
 using BankingAuth.Api.Domain;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
 
 var jwtKey = builder.Configuration["Jwt:SigningKey"];
 if (string.IsNullOrWhiteSpace(jwtKey))
-    throw new InvalidOperationException("Jwt:SigningKey must be configured in appsettings.");
+{
+    if (!builder.Environment.IsDevelopment())
+        throw new InvalidOperationException(
+            "Jwt:SigningKey must be configured via configuration or the Jwt__SigningKey environment variable outside Development.");
+
+    // Dev-only fallback so `dotnet run` works without extra setup. Never used outside Development
+    // because appsettings.json (Production/shared) intentionally omits Jwt:SigningKey.
+    jwtKey = "dev-only-change-me-banking-auth-signing-key-32b!";
+}
+
+var contentRootPath = builder.Environment.ContentRootPath;
 
 builder.Services.AddOpenApi();
-var authService = new AuthService(jwtKey);
-var adminEmail = builder.Configuration["Admin:Email"] ?? "admin@example.com";
-var adminPassword = builder.Configuration["Admin:Password"] ?? "Admin123!";
-authService.EnsureAdmin(adminEmail, adminPassword);
-builder.Services.AddSingleton(authService);
+builder.Services.AddDbContext<AuthDbContext>((sp, options) =>
+{
+    // Resolved from DI (not the top-level `builder.Configuration`) so that test-only overrides
+    // registered via WebApplicationFactory.ConfigureWebHost - which are applied when the host is
+    // built, after this file's top-level statements start running - are honored.
+    var configuration = sp.GetRequiredService<IConfiguration>();
+    var connectionString = configuration.GetConnectionString("BankingAuthDb") ?? "Data Source=bankingauth.db";
+    options.UseSqlite(ResolveSqliteConnectionString(connectionString, contentRootPath));
+});
+builder.Services.AddScoped(sp => new AuthService(sp.GetRequiredService<AuthDbContext>(), jwtKey));
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -38,6 +55,17 @@ builder.Services.AddAuthorization(options =>
 });
 
 var app = builder.Build();
+
+using (var startupScope = app.Services.CreateScope())
+{
+    var db = startupScope.ServiceProvider.GetRequiredService<AuthDbContext>();
+    db.Database.EnsureCreated();
+    db.Database.ExecuteSqlRaw("PRAGMA journal_mode='WAL';");
+
+    var adminEmail = builder.Configuration["Admin:Email"] ?? "admin@example.com";
+    var adminPassword = builder.Configuration["Admin:Password"] ?? "Admin123!";
+    startupScope.ServiceProvider.GetRequiredService<AuthService>().EnsureAdmin(adminEmail, adminPassword);
+}
 
 app.Use(async (context, next) =>
 {
@@ -175,5 +203,18 @@ static string? ResolveUserId(ClaimsPrincipal principal) =>
     principal.FindFirstValue(ClaimTypes.NameIdentifier)
     ?? principal.FindFirstValue(JwtRegisteredClaimNames.Sub)
     ?? principal.FindFirstValue("sub");
+
+/// <summary>
+/// Rewrites a relative "Data Source=..." path so the sqlite file always resolves against the
+/// app's content root, regardless of the process's current working directory. Absolute paths
+/// (e.g. the Docker volume mount) and non-file connection strings pass through unchanged.
+/// </summary>
+static string ResolveSqliteConnectionString(string connectionString, string contentRootPath)
+{
+    var builder = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder(connectionString);
+    if (!string.IsNullOrWhiteSpace(builder.DataSource) && !Path.IsPathRooted(builder.DataSource))
+        builder.DataSource = Path.Combine(contentRootPath, builder.DataSource);
+    return builder.ToString();
+}
 
 public partial class Program;

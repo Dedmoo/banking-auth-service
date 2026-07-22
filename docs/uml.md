@@ -2,10 +2,12 @@
 ```mermaid
 classDiagram
   class AuthService { +Register() +Login() +Refresh() +Logout() }
+  class AuthDbContext { +Users +RefreshTokens }
   class UserAccount { +Email +Role +FailedLoginAttempts +LockedUntil }
   class RefreshToken { +Token +Revoked }
-  AuthService o-- UserAccount
-  AuthService o-- RefreshToken
+  AuthService --> AuthDbContext
+  AuthDbContext o-- UserAccount
+  AuthDbContext o-- RefreshToken
 ```
 ```mermaid
 sequenceDiagram

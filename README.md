@@ -1,8 +1,12 @@
 # Banking Auth Service
 
-Authentication and authorization microservice for banking channels.
+An MVP authentication and authorization service for a banking-style backend. It is a learning /
+portfolio project, not a production bank system: treat it as a solid starting point for JWT +
+refresh-token auth with role-based access, not as a finished product.
 
-Built with **.NET 10**, JWT access tokens, refresh-token rotation, role-based access (`Customer` / `Teller` / `Admin`), and optional **TOTP 2FA**.
+Built with **.NET 10**, JWT access tokens, refresh-token rotation, role-based access
+(`Customer` / `Teller` / `Admin`), optional **TOTP 2FA**, and **EF Core + SQLite** for durable
+storage (a file-based database, no external DB server needed).
 
 ## Architecture
 
@@ -10,6 +14,7 @@ Built with **.NET 10**, JWT access tokens, refresh-token rotation, role-based ac
 flowchart TD
     UI["Mobile / Web / Teller UI"] -->|HTTPS| API["BankingAuth.Api<br/>register · login · refresh · me"]
     API --> Service["AuthService"]
+    Service --> DB[("SQLite<br/>bankingauth.db")]
     Service --> Hash["PBKDF2 password hash"]
     Service --> JWT["JWT access token · 30m"]
     Service --> Refresh["Refresh token · 7d<br/>rotated on use"]
@@ -27,11 +32,14 @@ sequenceDiagram
     actor User
     participant API as BankingAuth.Api
     participant Svc as AuthService
+    participant DB as SQLite
     User->>API: POST /api/auth/login
     API->>Svc: Verify email + password (PBKDF2)
+    Svc->>DB: Look up user, check lockout
     alt TOTP enabled
         Svc->>Svc: Verify TOTP code
     end
+    Svc->>DB: Persist refresh token / lockout state
     Svc-->>API: Access token + refresh token
     API-->>User: 200 OK (tokens)
     User->>API: GET /api/me (Bearer token)
@@ -40,13 +48,15 @@ sequenceDiagram
 
 ## Features
 
-- User registration with PBKDF2 password hashing (`Customer` / `Teller` only; Admin is not self-service)
+- User registration with PBKDF2 password hashing (`Customer` / `Teller` only; Admin is not
+  self-service, it is seeded from config on startup)
 - Login with JWT access token (30 minutes) + refresh token (7 days)
-- Refresh-token rotation (old token revoked after use)
+- Refresh-token rotation (old token revoked, new one issued, in a single DB transaction)
 - TOTP setup + confirmation (Google Authenticator compatible)
 - Role-protected Customer, Teller and Admin demonstration endpoints
 - Five-failure, 15-minute account lockout and letter-plus-digit password policy
 - Refresh-token logout/revocation and security response headers
+- Durable storage via EF Core + SQLite (users and refresh tokens survive a restart)
 - OpenAPI document mapped in every environment
 
 ## Diagrams
@@ -57,15 +67,19 @@ Architecture and UML diagrams are in [docs/architecture.md](docs/architecture.md
 classDiagram
     direction TB
     class AuthService {
-        -_usersByEmail: Dictionary~string, UserAccount~
-        -_refreshTokens: Dictionary~string, RefreshToken~
+        -_db: AuthDbContext
         +Register(request) UserAccount
         +EnsureAdmin(email, password) UserAccount
         +Login(request) TokenResponse
         +Refresh(refreshToken) TokenResponse
+        +Logout(refreshToken) void
         +BeginEnableTotp(userId) EnableTotpResponse
         +ConfirmEnableTotp(userId, code) void
         +GetProfile(userId) UserAccount
+    }
+    class AuthDbContext {
+        +Users: DbSet~UserAccount~
+        +RefreshTokens: DbSet~RefreshToken~
     }
     class PasswordHasher {
         <<utility>>
@@ -113,8 +127,9 @@ classDiagram
         +SharedSecret: string
         +OtpAuthUri: string
     }
-    AuthService o-- UserAccount
-    AuthService o-- RefreshToken
+    AuthService --> AuthDbContext
+    AuthDbContext o-- UserAccount
+    AuthDbContext o-- RefreshToken
     AuthService ..> PasswordHasher
     UserAccount --> UserRole
     AuthService ..> RegisterRequest
@@ -123,7 +138,7 @@ classDiagram
     AuthService ..> EnableTotpResponse
 ```
 
-## Quick start
+## Quick start (local .NET)
 
 ```bash
 dotnet restore
@@ -133,9 +148,27 @@ dotnet run --project BankingAuth.Api
 
 API base URL (HTTP): `http://localhost:5049`
 
-Admin bootstrap (Development): on startup the API seeds
-`Admin:Email` / `Admin:Password` from config (defaults `admin@example.com` / `Admin123!`)
-via `EnsureAdmin`. Use that account for `GET /api/admin/ping`.
+On startup the API creates the SQLite schema if it doesn't exist yet
+(`BankingAuth.Api/bankingauth.db`, gitignored) and seeds an Admin account from
+`Admin:Email` / `Admin:Password` (defaults `admin@example.com` / `Admin123!`) via
+`EnsureAdmin`. Use that account for `GET /api/admin/ping`.
+
+The `Jwt:SigningKey` used in Development comes from `appsettings.Development.json`
+(a placeholder value, fine for local use only). Outside Development the API **requires**
+`Jwt:SigningKey` / `Jwt__SigningKey` to be set explicitly and refuses to start otherwise -
+see [Security notes](#security-notes).
+
+## Run with Docker
+
+```bash
+echo "JWT_SIGNING_KEY=replace-with-a-long-random-secret-at-least-32-chars" > .env
+docker compose up --build
+```
+
+This builds the API image and runs it on `http://localhost:8080`, with the SQLite file
+persisted in the `banking-auth-data` named volume (mounted at `/data` in the container), so
+data survives `docker compose down` / `up` cycles. `JWT_SIGNING_KEY` is required; the container
+fails fast on startup if it's missing (see `docker-compose.yml`).
 
 ## Example flow
 
@@ -179,8 +212,12 @@ curl -s http://localhost:5049/api/me -H "Authorization: Bearer <access_token>"
 
 ## Security notes
 
-- Demo storage is in-memory (restart clears users)
-- Replace the JWT signing key before any shared deployment
+- Storage is SQLite via EF Core; refresh-token rotation runs inside an explicit DB transaction
+  so a crash mid-rotation can't leave an old token revoked without a new one issued
+- `Jwt:SigningKey` has **no fallback outside Development** - the app throws on startup if it's
+  missing, instead of silently signing tokens with a weak default. In Development it falls back
+  to a placeholder key (`appsettings.Development.json`) purely so `dotnet run` works out of the box
+- Replace `Jwt:SigningKey` and the Admin bootstrap password before any shared/public deployment
 - TOTP uses a 1-step verification window
 
 ## Tests
@@ -188,6 +225,15 @@ curl -s http://localhost:5049/api/me -H "Authorization: Bearer <access_token>"
 ```bash
 dotnet test
 ```
+
+Includes unit tests for `AuthService`/`PasswordHasher`, `WebApplicationFactory`-based integration
+tests for role isolation and security headers, and dedicated persistence tests that register a
+user or issue a refresh token in one `AuthDbContext`/`WebApplicationFactory` instance, then open a
+brand new one against the same SQLite file (simulating a restart) and prove login/refresh still
+work. Every test class uses its own temp SQLite file so tests never share state.
+
+CI (`.github/workflows/ci.yml`) restores, builds and runs the full test suite on `ubuntu-latest`
+for every push/PR to `main`.
 
 ## License
 
