@@ -9,6 +9,8 @@ namespace BankingAuth.Api.Domain;
 
 public sealed class AuthService
 {
+    private const int MaximumFailedLoginAttempts = 5;
+    private static readonly TimeSpan LockoutDuration = TimeSpan.FromMinutes(15);
     private readonly object _gate = new();
     private readonly Dictionary<string, UserAccount> _usersByEmail = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RefreshToken> _refreshTokens = new(StringComparer.Ordinal);
@@ -25,8 +27,7 @@ public sealed class AuthService
         ArgumentNullException.ThrowIfNull(request);
         if (string.IsNullOrWhiteSpace(request.Email) || string.IsNullOrWhiteSpace(request.Password))
             throw new InvalidOperationException("Email and password are required.");
-        if (request.Password.Length < 8)
-            throw new InvalidOperationException("Password must be at least 8 characters.");
+        ValidatePassword(request.Password);
 
         if (!Enum.TryParse<UserRole>(request.Role, ignoreCase: true, out var role))
             throw new InvalidOperationException("Role must be Customer or Teller.");
@@ -57,8 +58,7 @@ public sealed class AuthService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(email);
         ArgumentException.ThrowIfNullOrWhiteSpace(password);
-        if (password.Length < 8)
-            throw new InvalidOperationException("Password must be at least 8 characters.");
+        ValidatePassword(password);
 
         lock (_gate)
         {
@@ -87,11 +87,24 @@ public sealed class AuthService
         ArgumentNullException.ThrowIfNull(request);
         lock (_gate)
         {
-            if (!_usersByEmail.TryGetValue(request.Email.Trim(), out var user)
-                || !PasswordHasher.Verify(request.Password, user.PasswordHash))
+            if (!_usersByEmail.TryGetValue(request.Email.Trim(), out var user))
             {
                 throw new UnauthorizedAccessException("Invalid email or password.");
             }
+            if (user.LockedUntil is { } lockedUntil && lockedUntil > DateTimeOffset.UtcNow)
+                throw new UnauthorizedAccessException("Account is temporarily locked.");
+            if (!PasswordHasher.Verify(request.Password, user.PasswordHash))
+            {
+                user.FailedLoginAttempts++;
+                if (user.FailedLoginAttempts >= MaximumFailedLoginAttempts)
+                {
+                    user.FailedLoginAttempts = 0;
+                    user.LockedUntil = DateTimeOffset.UtcNow.Add(LockoutDuration);
+                }
+                throw new UnauthorizedAccessException("Invalid email or password.");
+            }
+            user.FailedLoginAttempts = 0;
+            user.LockedUntil = null;
 
             if (user.TotpEnabled)
             {
@@ -119,6 +132,18 @@ public sealed class AuthService
             var user = _usersByEmail.Values.First(u => u.UserId == stored.UserId);
             stored.Revoked = true;
             return IssueTokens(user);
+        }
+    }
+
+    public void Logout(string refreshToken)
+    {
+        if (string.IsNullOrWhiteSpace(refreshToken))
+            throw new UnauthorizedAccessException("Refresh token is required.");
+        lock (_gate)
+        {
+            if (!_refreshTokens.TryGetValue(refreshToken, out var stored) || stored.Revoked)
+                throw new UnauthorizedAccessException("Invalid refresh token.");
+            stored.Revoked = true;
         }
     }
 
@@ -171,7 +196,7 @@ public sealed class AuthService
             SecurityAlgorithms.HmacSha256);
 
         var jwt = new JwtSecurityToken(
-            issuer: "banking-auth-service",
+            issuer: "BankingAuthService",
             audience: "banking-clients",
             claims: claims,
             expires: expires.UtcDateTime,
@@ -203,5 +228,11 @@ public sealed class AuthService
             return false;
         var totp = new Totp(Base32Encoding.ToBytes(user.TotpSecret));
         return totp.VerifyTotp(code.Trim(), out _, new VerificationWindow(1, 1));
+    }
+
+    private static void ValidatePassword(string password)
+    {
+        if (password.Length < 8 || !password.Any(char.IsLetter) || !password.Any(char.IsDigit))
+            throw new InvalidOperationException("Password must be at least 8 characters and contain a letter and a digit.");
     }
 }

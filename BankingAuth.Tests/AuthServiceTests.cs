@@ -77,4 +77,36 @@ public class AuthServiceTests
         Assert.True(PasswordHasher.Verify("HelloBank1", hash));
         Assert.False(PasswordHasher.Verify("HelloBank2", hash));
     }
+
+    [Fact]
+    public void Register_RejectsPasswordWithoutLetterAndDigit()
+    {
+        var auth = Create();
+        Assert.Throws<InvalidOperationException>(() =>
+            auth.Register(new RegisterRequest("weak@bank.test", "12345678")));
+        Assert.Throws<InvalidOperationException>(() =>
+            auth.Register(new RegisterRequest("weak2@bank.test", "abcdefgh")));
+    }
+
+    [Fact]
+    public void Login_FiveFailures_LocksAccount()
+    {
+        var auth = Create();
+        auth.Register(new RegisterRequest("locked@bank.test", "Secret123!"));
+        for (var attempt = 0; attempt < 5; attempt++)
+            Assert.Throws<UnauthorizedAccessException>(() => auth.Login(new LoginRequest("locked@bank.test", "wrong123")));
+
+        Assert.Throws<UnauthorizedAccessException>(() =>
+            auth.Login(new LoginRequest("locked@bank.test", "Secret123!")));
+    }
+
+    [Fact]
+    public void Logout_RevokesRefreshToken()
+    {
+        var auth = Create();
+        auth.Register(new RegisterRequest("logout@bank.test", "Secret123!"));
+        var tokens = auth.Login(new LoginRequest("logout@bank.test", "Secret123!"));
+        auth.Logout(tokens.RefreshToken);
+        Assert.Throws<UnauthorizedAccessException>(() => auth.Refresh(tokens.RefreshToken));
+    }
 }

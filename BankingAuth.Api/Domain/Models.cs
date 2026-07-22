@@ -15,6 +15,8 @@ public sealed class UserAccount
     public required UserRole Role { get; init; }
     public string? TotpSecret { get; set; }
     public bool TotpEnabled { get; set; }
+    public int FailedLoginAttempts { get; set; }
+    public DateTimeOffset? LockedUntil { get; set; }
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
 }
 
@@ -30,5 +32,6 @@ public sealed record RegisterRequest(string Email, string Password, string Role 
 public sealed record LoginRequest(string Email, string Password, string? TotpCode = null);
 public sealed record TokenResponse(string AccessToken, string RefreshToken, DateTimeOffset ExpiresAt, bool RequiresTotp);
 public sealed record RefreshRequest(string RefreshToken);
+public sealed record LogoutRequest(string RefreshToken);
 public sealed record EnableTotpResponse(string SharedSecret, string OtpAuthUri);
 public sealed record VerifyTotpRequest(string Code);

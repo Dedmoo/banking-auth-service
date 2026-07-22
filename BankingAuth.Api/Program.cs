@@ -27,7 +27,7 @@ builder.Services
             ValidateAudience = true,
             ValidateIssuerSigningKey = true,
             ValidateLifetime = true,
-            ValidIssuer = "banking-auth-service",
+            ValidIssuer = "BankingAuthService",
             ValidAudience = "banking-clients",
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
         };
@@ -39,10 +39,16 @@ builder.Services.AddAuthorization(options =>
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
+app.Use(async (context, next) =>
 {
-    app.MapOpenApi();
-}
+    context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+    context.Response.Headers["X-Frame-Options"] = "DENY";
+    context.Response.Headers["Referrer-Policy"] = "no-referrer";
+    context.Response.Headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'";
+    await next();
+});
+
+app.MapOpenApi();
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -79,6 +85,19 @@ app.MapPost("/api/auth/refresh", (RefreshRequest request, AuthService auth) =>
     try
     {
         return Results.Ok(auth.Refresh(request.RefreshToken));
+    }
+    catch (UnauthorizedAccessException)
+    {
+        return Results.Unauthorized();
+    }
+});
+
+app.MapPost("/api/auth/logout", (LogoutRequest request, AuthService auth) =>
+{
+    try
+    {
+        auth.Logout(request.RefreshToken);
+        return Results.NoContent();
     }
     catch (UnauthorizedAccessException)
     {
@@ -135,7 +154,20 @@ app.MapGet("/api/me", (ClaimsPrincipal principal, AuthService auth) =>
 app.MapGet("/api/admin/ping", () => Results.Ok(new { ok = true, scope = "admin" }))
     .RequireAuthorization("AdminOnly");
 
-app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "banking-auth-service" }));
+app.MapGet("/api/customer/accounts/summary", (ClaimsPrincipal principal) =>
+{
+    var accounts = new[] { new { accountId = "DEMO-001", currency = "TRY", availableBalance = 1250.00m } };
+    return Results.Ok(new { customerId = ResolveUserId(principal), accounts });
+}).RequireAuthorization(policy => policy.RequireRole(nameof(UserRole.Customer), nameof(UserRole.Admin)));
+
+app.MapGet("/api/teller/customers/lookup", (string email) =>
+{
+    if (string.IsNullOrWhiteSpace(email) || !email.Contains('@', StringComparison.Ordinal))
+        return Results.BadRequest(new { error = "A valid email is required." });
+    return Results.Ok(new { email = email.Trim().ToLowerInvariant(), customerId = "demo-customer", status = "mocked" });
+}).RequireAuthorization(policy => policy.RequireRole(nameof(UserRole.Teller), nameof(UserRole.Admin)));
+
+app.MapGet("/health", () => Results.Ok(new { status = "healthy", service = "BankingAuthService" }));
 
 app.Run();
 

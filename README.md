@@ -44,12 +44,14 @@ sequenceDiagram
 - Login with JWT access token (30 minutes) + refresh token (7 days)
 - Refresh-token rotation (old token revoked after use)
 - TOTP setup + confirmation (Google Authenticator compatible)
-- Role-protected admin endpoint
-- OpenAPI document included
+- Role-protected Customer, Teller and Admin demonstration endpoints
+- Five-failure, 15-minute account lockout and letter-plus-digit password policy
+- Refresh-token logout/revocation and security response headers
+- OpenAPI document mapped in every environment
 
-## Domain model
+## Diagrams
 
-Class-level view of the main types and how they relate (fields, operations and dependencies).
+Architecture and UML diagrams are in [docs/architecture.md](docs/architecture.md) and [docs/uml.md](docs/uml.md). A standalone index is available at [docs/index.html](docs/index.html).
 
 ```mermaid
 classDiagram
@@ -166,10 +168,13 @@ curl -s http://localhost:5049/api/me -H "Authorization: Bearer <access_token>"
 | `POST` | `/api/auth/register` | No | Create user |
 | `POST` | `/api/auth/login` | No | Issue tokens |
 | `POST` | `/api/auth/refresh` | No | Rotate refresh token |
+| `POST` | `/api/auth/logout` | No | Revoke a refresh token |
 | `POST` | `/api/auth/totp/setup` | Yes | Begin TOTP enrollment |
 | `POST` | `/api/auth/totp/confirm` | Yes | Confirm TOTP |
 | `GET` | `/api/me` | Yes | Current profile |
 | `GET` | `/api/admin/ping` | Admin | Role check |
+| `GET` | `/api/customer/accounts/summary` | Customer or Admin | Mock account summary |
+| `GET` | `/api/teller/customers/lookup?email=` | Teller or Admin | Mock customer lookup |
 | `GET` | `/health` | No | Health check |
 
 ## Security notes
